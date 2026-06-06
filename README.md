@@ -72,8 +72,28 @@ Package:
 Output:
 
 ```text
-output \io.github.brendangrant.opendeck.loupedeck.sdPlugin
+output\io.github.brendangrant.opendeck.loupedeck.sdPlugin
 ```
+
+## Releases
+
+This repository uses a tag-driven GitHub Actions release workflow.
+
+To publish a release:
+
+1. Update `src\manifest.json` and set the plugin `Version`.
+2. Commit that change.
+3. Create a matching Git tag in the form `v<version>`.
+4. Push the commit and tag.
+
+Example:
+
+```powershell
+git tag v0.1.0
+git push origin main --tags
+```
+
+The release workflow validates that the Git tag version matches `src\manifest.json`, packages the plugin, and uploads the `.sdPlugin` archive to the GitHub Release.
 
 ## Credits
 
@@ -94,6 +114,6 @@ Additional ecosystem references:
 
 ## Project Files
 
-- Manifest: `manifest.json`
-- Project: `OpenDeck.Loupedeck.csproj`
-- Packager: `package-opendeck-plugin.ps1`
+- Manifest: `src\manifest.json`
+- Project: `src\OpenDeck.Loupedeck.csproj`
+- Packager: `packaging\package-opendeck-plugin.ps1`

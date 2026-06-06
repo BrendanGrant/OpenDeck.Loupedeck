@@ -1,0 +1,59 @@
+name: Release OpenDeck Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate tag version matches manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -LiteralPath "./src/manifest.json" -Raw | ConvertFrom-Json
+          $manifestVersion = [string]$manifest.Version
+          $tagVersion = "${{ github.ref_name }}"
+
+          if ($tagVersion.StartsWith("v")) {
+            $tagVersion = $tagVersion.Substring(1)
+          }
+
+          if ($tagVersion -ne $manifestVersion) {
+            throw "Git tag version '$tagVersion' does not match manifest version '$manifestVersion'."
+          }
+
+      - name: Package plugin
+        shell: pwsh
+        run: >
+          ./packaging/package-opendeck-plugin.ps1
+          -Configuration Release
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: io.github.brendangrant.opendeck.loupedeck.sdPlugin
+          path: output/io.github.brendangrant.opendeck.loupedeck.sdPlugin
+          if-no-files-found: error
+
+      - name: Publish GitHub release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/io.github.brendangrant.opendeck.loupedeck.sdPlugin
+          generate_release_notes: true
