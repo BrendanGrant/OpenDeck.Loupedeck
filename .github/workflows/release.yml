@@ -12,13 +12,15 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
@@ -45,7 +47,7 @@ jobs:
           -Configuration Release
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: io.github.brendangrant.opendeck.loupedeck.sdPlugin
           path: output/io.github.brendangrant.opendeck.loupedeck.sdPlugin
