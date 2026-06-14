@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [string]$OutputRoot = "output"
+    [string]$OutputRoot = "output",
+    [bool]$PublishAot = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,26 @@ $pluginArchive = Join-Path $resolvedOutputRoot $pluginPackageName
 $temporaryZip = Join-Path $resolvedOutputRoot "io.github.brendangrant.opendeck.loupedeck.zip"
 $runtimes = @("win-x64", "linux-arm64")
 
+function Test-AotSupportedOnHost {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Runtime
+    )
+
+    $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $isLinuxHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+
+    if ($Runtime.StartsWith("win-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $isWindowsHost
+    }
+
+    if ($Runtime.StartsWith("linux-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $isLinuxHost
+    }
+
+    return $false
+}
+
 if (Test-Path $resolvedOutputRoot) {
     Remove-Item -LiteralPath $resolvedOutputRoot -Recurse -Force
 }
@@ -31,17 +52,24 @@ New-Item -ItemType Directory -Force $pluginDir | Out-Null
 foreach ($runtime in $runtimes) {
     $publishDir = Join-Path $publishRoot $runtime
     $pluginRuntimeDir = Join-Path $pluginDir $runtime
+    $publishAotForRuntime = $PublishAot -and (Test-AotSupportedOnHost -Runtime $runtime)
 
+    if ($PublishAot -and -not $publishAotForRuntime) {
+        Write-Warning "Native AOT for runtime '$runtime' is not supported from this host OS. Falling back to self-contained non-AOT publish."
+    }
+
+    Write-Host "Publishing $runtime (AOT=$publishAotForRuntime) ..."
     dotnet publish $projectFile `
         -c $Configuration `
         -r $runtime `
         --self-contained true `
         -p:DebugSymbols=false `
         -p:DebugType=None `
+        -p:PublishAot=$publishAotForRuntime `
         -o $publishDir
 
     if ($LASTEXITCODE -ne 0) {
-        throw "dotnet publish failed for runtime '$runtime' with exit code $LASTEXITCODE. Make sure a .NET 10 SDK is installed and selected."
+        throw "dotnet publish failed for runtime '$runtime' with exit code $LASTEXITCODE."
     }
 
     New-Item -ItemType Directory -Force $pluginRuntimeDir | Out-Null

@@ -7,6 +7,9 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>opendeck-loupedeck</AssemblyName>
     <RootNamespace>OpenDeck.Loupedeck</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsAotCompatible>true</IsAotCompatible>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
 
   <ItemGroup>

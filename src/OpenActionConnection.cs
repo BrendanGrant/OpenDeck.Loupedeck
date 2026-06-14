@@ -1,6 +1,8 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace OpenDeck.Loupedeck;
 
@@ -28,30 +30,35 @@ internal sealed class OpenActionConnection : IAsyncDisposable
     public async Task ConnectAsync(CancellationToken cancellationToken)
     {
         await _socket.ConnectAsync(Uri, cancellationToken);
-        await SendAsync(new Dictionary<string, object?>
-        {
-            ["event"] = _registerEvent,
-            ["uuid"] = _pluginUuid,
-        }, cancellationToken);
+        await SendAsync(new RegisterPluginMessage(_registerEvent, _pluginUuid), OpenActionJsonContext.Default.RegisterPluginMessage, cancellationToken);
     }
 
     public Task RegisterDeviceAsync(string deviceId, DeviceProfile profile, CancellationToken cancellationToken)
-        => SendEventAsync("registerDevice", new
-        {
-            id = deviceId,
-            name = profile.Name,
-            rows = checked((byte)profile.Rows),
-            columns = checked((byte)profile.Columns),
-            encoders = checked((byte)profile.EncoderCount),
-            touchpoints = checked((byte)profile.PhysicalButtonColorCount),
-            type = (byte)0,
-        }, cancellationToken);
+        => SendAsync(
+            new RegisterDeviceEnvelope(
+                "registerDevice",
+                new RegisterDevicePayload(
+                    deviceId,
+                    profile.Name,
+                    checked((byte)profile.Rows),
+                    checked((byte)profile.Columns),
+                    checked((byte)profile.EncoderCount),
+                    checked((byte)profile.PhysicalButtonColorCount),
+                    0)),
+            OpenActionJsonContext.Default.RegisterDeviceEnvelope,
+            cancellationToken);
 
     public Task UnregisterDeviceAsync(string deviceId, CancellationToken cancellationToken)
-        => SendEventAsync("unregisterDevice", new { id = deviceId, device = deviceId }, cancellationToken);
+        => SendAsync(
+            new StringPayloadEnvelope("unregisterDevice", new StringPayload(deviceId, deviceId)),
+            OpenActionJsonContext.Default.StringPayloadEnvelope,
+            cancellationToken);
 
     public Task RerenderImagesAsync(string deviceId, CancellationToken cancellationToken)
-        => SendEventAsync("rerenderImages", new { id = deviceId, device = deviceId }, cancellationToken);
+        => SendAsync(
+            new StringPayloadEnvelope("rerenderImages", new StringPayload(deviceId, deviceId)),
+            OpenActionJsonContext.Default.StringPayloadEnvelope,
+            cancellationToken);
 
     public Task KeyDownAsync(string deviceId, int position, CancellationToken cancellationToken)
         => SendInputAsync("keyDown", deviceId, position, null, cancellationToken);
@@ -104,32 +111,25 @@ internal sealed class OpenActionConnection : IAsyncDisposable
 
     private Task SendInputAsync(string eventName, string deviceId, int position, int? delta, CancellationToken cancellationToken)
     {
-        object payload = eventName == "encoderChange"
-            ? new
-            {
-                device = deviceId,
-                position = checked((byte)position),
-                ticks = checked((short)(delta ?? 0)),
-            }
-            : new
-            {
-                device = deviceId,
-                position = checked((byte)position),
-            };
+        if (eventName == "encoderChange")
+        {
+            return SendAsync(
+                new EncoderChangeEnvelope(
+                    eventName,
+                    new EncoderChangePayload(deviceId, checked((byte)position), checked((short)(delta ?? 0)))),
+                OpenActionJsonContext.Default.EncoderChangeEnvelope,
+                cancellationToken);
+        }
 
-        return SendEventAsync(eventName, payload, cancellationToken);
+        return SendAsync(
+            new InputEnvelope(eventName, new InputPayload(deviceId, checked((byte)position))),
+            OpenActionJsonContext.Default.InputEnvelope,
+            cancellationToken);
     }
 
-    private Task SendEventAsync(string eventName, object payload, CancellationToken cancellationToken)
-        => SendAsync(new Dictionary<string, object?>
-        {
-            ["event"] = eventName,
-            ["payload"] = payload,
-        }, cancellationToken);
-
-    private async Task SendAsync(object message, CancellationToken cancellationToken)
+    private async Task SendAsync<TMessage>(TMessage message, JsonTypeInfo<TMessage> jsonTypeInfo, CancellationToken cancellationToken)
     {
-        var json = JsonSerializer.Serialize(message, JsonOptions);
+        var json = JsonSerializer.Serialize(message, jsonTypeInfo);
         if (PluginSettings.TracePackets)
             Log.Info($"oa tx {json}");
 
@@ -260,14 +260,29 @@ internal sealed class OpenActionConnection : IAsyncDisposable
         _socket.Dispose();
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-    };
 }
 
 internal sealed record SetImageRequest(string DeviceId, string Controller, int Position, string Image);
 internal sealed record SetBrightnessRequest(string DeviceId, double Brightness);
 internal sealed record OpenDeckEventArgs(string EventName, string Json);
 internal sealed record DeviceDidConnectEvent(string DeviceId);
+
+internal sealed record RegisterPluginMessage(string Event, string Uuid);
+internal sealed record RegisterDeviceEnvelope(string Event, RegisterDevicePayload Payload);
+internal sealed record RegisterDevicePayload(string Id, string Name, byte Rows, byte Columns, byte Encoders, byte Touchpoints, byte Type);
+internal sealed record StringPayloadEnvelope(string Event, StringPayload Payload);
+internal sealed record StringPayload(string Id, string Device);
+internal sealed record InputEnvelope(string Event, InputPayload Payload);
+internal sealed record InputPayload(string Device, byte Position);
+internal sealed record EncoderChangeEnvelope(string Event, EncoderChangePayload Payload);
+internal sealed record EncoderChangePayload(string Device, byte Position, short Ticks);
+
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(RegisterPluginMessage))]
+[JsonSerializable(typeof(RegisterDeviceEnvelope))]
+[JsonSerializable(typeof(StringPayloadEnvelope))]
+[JsonSerializable(typeof(InputEnvelope))]
+[JsonSerializable(typeof(EncoderChangeEnvelope))]
+internal partial class OpenActionJsonContext : JsonSerializerContext;
