@@ -114,7 +114,9 @@ internal static class LoupedeckTransportDiscovery
                 Log.Info($"Falling back to probing likely Linux CDC serial port {portPath}.");
 
             var stableId = TryGetLinuxStableId(portPath) ?? portPath;
-            yield return new SerialCandidate(portPath, new LoupedeckDeviceInfo(0x2ec2, 0x0004) { StableId = stableId });
+            yield return new SerialCandidate(
+                portPath,
+                new LoupedeckDeviceInfo(KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive) { StableId = stableId });
         }
     }
 
@@ -176,7 +178,8 @@ internal static class LoupedeckTransportDiscovery
         }
     }
 
-    private static bool IsSupportedVendor(int vendorId) => vendorId is 0x2ec2 or 0x1532;
+    private static bool IsSupportedVendor(int vendorId)
+        => vendorId is KnownUsbIds.VendorLoupedeck or KnownUsbIds.VendorRazer;
 
     private static LoupedeckDeviceInfo? TryParseDeviceInfo(string keyName)
     {
@@ -242,7 +245,7 @@ internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
     public WebSocketLoupedeckTransport(string host) => _uri = new Uri($"ws://{host}");
 
     public string Address => _uri.ToString();
-    public LoupedeckDeviceInfo DeviceInfo { get; } = new(0x2ec2, 0x0004);
+    public LoupedeckDeviceInfo DeviceInfo { get; } = new(KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive);
 
     public Task ConnectAsync(CancellationToken cancellationToken) => _socket.ConnectAsync(_uri, cancellationToken);
 

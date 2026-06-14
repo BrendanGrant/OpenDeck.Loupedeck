@@ -13,6 +13,10 @@ public sealed record DeviceProfile(
     int CenterHeight,
     int CenterX,
     bool HasSideStrips,
+    int SideStripWidth,
+    int SideStripHeight,
+    int LeftStripX,
+    int RightStripX,
     int PhysicalButtonColorCount,
     int EncoderCount)
 {
@@ -20,9 +24,9 @@ public sealed record DeviceProfile(
 
     public static DeviceProfile From(LoupedeckDeviceInfo info) => (info.VendorId, info.ProductId) switch
     {
-        (0x1532, 0x0d09) => RazerStreamControllerX,
-        (0x1532, 0x0d06) => RazerStreamController,
-        (0x2ec2, 0x0004) => LoupedeckLive,
+        (KnownUsbIds.VendorRazer, KnownUsbIds.ProductRazerStreamControllerX) => RazerStreamControllerX,
+        (KnownUsbIds.VendorRazer, KnownUsbIds.ProductRazerStreamController) => RazerStreamController,
+        (KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive) => LoupedeckLive,
         _ => LoupedeckLive,
     };
 
@@ -37,6 +41,10 @@ public sealed record DeviceProfile(
         CenterHeight: 270,
         CenterX: 60,
         HasSideStrips: true,
+        SideStripWidth: 60,
+        SideStripHeight: 270,
+        LeftStripX: 0,
+        RightStripX: 420,
         PhysicalButtonColorCount: 8,
         EncoderCount: 6);
 
@@ -56,6 +64,10 @@ public sealed record DeviceProfile(
         CenterHeight: 288,
         CenterX: 0,
         HasSideStrips: false,
+        SideStripWidth: 0,
+        SideStripHeight: 0,
+        LeftStripX: 0,
+        RightStripX: 0,
         PhysicalButtonColorCount: 0,
         EncoderCount: 0);
 }

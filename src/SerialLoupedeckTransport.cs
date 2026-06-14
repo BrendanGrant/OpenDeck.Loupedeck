@@ -4,6 +4,14 @@ namespace OpenDeck.Loupedeck;
 
 internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
 {
+    private const int HandshakeResponseLimit = 4096;
+    private const byte WebSocketBinaryFrameOpcode = 0x82;
+    private const byte WebSocketExtendedLengthMarker = 0xff;
+    private const int WebSocketShortHeaderLength = 6;
+    private const int WebSocketExtendedHeaderLength = 14;
+    private const int WebSocketExtendedLengthPayloadOffset = 4;
+    private const int WebSocketExtendedLengthBytes = 12;
+    private static readonly byte[] WebSocketCloseFrame = [0x88, 0x80, 0, 0, 0, 0];
     private const string UpgradeRequest =
         "GET /index.html HTTP/1.1\r\n" +
         "Connection: Upgrade\r\n" +
@@ -40,7 +48,7 @@ internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
 
             var response = new List<byte>();
             var singleByte = new byte[1];
-            while (response.Count < 4096)
+            while (response.Count < HandshakeResponseLimit)
             {
                 var read = await ReadAsync(singleByte, connectToken);
                 if (read == 0)
@@ -77,15 +85,15 @@ internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
         byte[] prefix;
         if (packet.Length > byte.MaxValue)
         {
-            prefix = new byte[14];
-            prefix[0] = 0x82;
-            prefix[1] = 0xff;
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(prefix.AsSpan(6), checked((uint)packet.Length));
+            prefix = new byte[WebSocketExtendedHeaderLength];
+            prefix[0] = WebSocketBinaryFrameOpcode;
+            prefix[1] = WebSocketExtendedLengthMarker;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(prefix.AsSpan(WebSocketShortHeaderLength), checked((uint)packet.Length));
         }
         else
         {
-            prefix = new byte[6];
-            prefix[0] = 0x82;
+            prefix = new byte[WebSocketShortHeaderLength];
+            prefix[0] = WebSocketBinaryFrameOpcode;
             prefix[1] = (byte)(0x80 + packet.Length);
         }
 
@@ -103,18 +111,18 @@ internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
             var read = await ReadAsync(first, cancellationToken);
             if (read == 0)
                 return null;
-            if (first[0] == 0x82)
+            if (first[0] == WebSocketBinaryFrameOpcode)
                 break;
         }
 
         var lengthByte = new byte[1];
         await ReadExactlyAsync(lengthByte, cancellationToken);
         var length = (int)lengthByte[0];
-        if (length == 0xff)
+        if (length == WebSocketExtendedLengthMarker)
         {
-            var extended = new byte[12];
+            var extended = new byte[WebSocketExtendedLengthBytes];
             await ReadExactlyAsync(extended, cancellationToken);
-            length = checked((int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(extended.AsSpan(4, 4)));
+            length = checked((int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(extended.AsSpan(WebSocketExtendedLengthPayloadOffset, 4)));
         }
 
         var packet = new byte[length];
@@ -196,7 +204,7 @@ internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
             {
                 if (port.IsOpen)
                 {
-                    port.Write(new byte[] { 0x88, 0x80, 0, 0, 0, 0 }, 0, 6);
+                    port.Write(WebSocketCloseFrame, 0, WebSocketCloseFrame.Length);
                     port.Close();
                 }
             }
