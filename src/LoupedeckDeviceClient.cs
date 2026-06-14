@@ -73,6 +73,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     public event EventHandler<TouchEventArgs>? TouchChanged;
 
     public string Address => _transport.Address;
+    public string StableId => _transport.DeviceInfo.StableId ?? _transport.Address;
     public DeviceProfile Profile => _profile;
 
     public static async Task<LoupedeckDeviceClient> ConnectFirstAsync(CancellationToken cancellationToken = default)
@@ -162,12 +163,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         return DrawRectangleAsync(0, 0, canvas, refresh, cancellationToken);
     }
 
-    public async Task DrawRectangleAsync(
-        int x,
-        int y,
-        Rgb565Canvas canvas,
-        bool refresh = true,
-        CancellationToken cancellationToken = default)
+    public async Task DrawRectangleAsync(int x, int y, Rgb565Canvas canvas, bool refresh = true, CancellationToken cancellationToken = default)
     {
         var data = new byte[10 + canvas.Pixels.Length];
         MainDisplay.CopyTo(data, 0);
@@ -187,9 +183,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     {
         var repeatCount = Math.Max(1, PluginSettings.RefreshRepeatCount);
         for (var index = 0; index < repeatCount; index++)
-        {
             await SendCommandAsync(SerialRefresh, new byte[] { 0x4d, 0x01 }, waitForAck: PluginSettings.WaitForRefreshAck, cancellationToken);
-        }
     }
 
     private Task DrawStripAsync(int x, Rgb565Canvas canvas, bool refresh, CancellationToken cancellationToken)
@@ -237,8 +231,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
             var pending = string.Join(", ", _pending.Keys.Select(id => $"0x{id:x2}"));
             var last = _lastReceivedPacket.Length == 0 ? "<none>" : Convert.ToHexString(_lastReceivedPacket);
             throw new TimeoutException(
-                $"Timed out waiting for ACK to command 0x{command:x2}, transaction 0x{transactionId:x2}. " +
-                $"Pending transactions: [{pending}]. Last received packet: {last}.",
+                $"Timed out waiting for ACK to command 0x{command:x2}, transaction 0x{transactionId:x2}. Pending transactions: [{pending}]. Last received packet: {last}.",
                 ex);
         }
         finally
@@ -358,6 +351,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
                 Log.Info("Receive loop did not stop within 1 second during shutdown; continuing close.");
             }
         }
+
         _receiveCancellation?.Dispose();
         _sendLock.Dispose();
     }

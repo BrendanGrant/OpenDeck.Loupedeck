@@ -19,8 +19,11 @@ internal sealed class OpenActionConnection : IAsyncDisposable
     }
 
     public Uri Uri { get; }
+    public event EventHandler? Closed;
     public event EventHandler<SetImageRequest>? SetImageRequested;
     public event EventHandler<SetBrightnessRequest>? SetBrightnessRequested;
+    public event EventHandler<DeviceDidConnectEvent>? DeviceDidConnect;
+    public event EventHandler<OpenDeckEventArgs>? EventReceived;
 
     public async Task ConnectAsync(CancellationToken cancellationToken)
     {
@@ -47,6 +50,9 @@ internal sealed class OpenActionConnection : IAsyncDisposable
     public Task UnregisterDeviceAsync(string deviceId, CancellationToken cancellationToken)
         => SendEventAsync("unregisterDevice", new { id = deviceId, device = deviceId }, cancellationToken);
 
+    public Task RerenderImagesAsync(string deviceId, CancellationToken cancellationToken)
+        => SendEventAsync("rerenderImages", new { id = deviceId, device = deviceId }, cancellationToken);
+
     public Task KeyDownAsync(string deviceId, int position, CancellationToken cancellationToken)
         => SendInputAsync("keyDown", deviceId, position, null, cancellationToken);
 
@@ -65,20 +71,34 @@ internal sealed class OpenActionConnection : IAsyncDisposable
     public async Task ReceiveLoopAsync(CancellationToken cancellationToken)
     {
         var buffer = new byte[64 * 1024];
-        while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
+        try
         {
-            using var message = new MemoryStream();
-            WebSocketReceiveResult result;
-            do
+            while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
             {
-                result = await _socket.ReceiveAsync(buffer, cancellationToken);
-                if (result.MessageType == WebSocketMessageType.Close)
-                    return;
-                message.Write(buffer, 0, result.Count);
-            } while (!result.EndOfMessage);
+                using var message = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _socket.ReceiveAsync(buffer, cancellationToken);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        Closed?.Invoke(this, EventArgs.Empty);
+                        return;
+                    }
 
-            if (result.MessageType == WebSocketMessageType.Text)
-                HandleMessage(Encoding.UTF8.GetString(message.ToArray()));
+                    message.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
+
+                if (result.MessageType == WebSocketMessageType.Text)
+                    HandleMessage(Encoding.UTF8.GetString(message.ToArray()));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (WebSocketException)
+        {
+            Closed?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -96,6 +116,7 @@ internal sealed class OpenActionConnection : IAsyncDisposable
                 device = deviceId,
                 position = checked((byte)position),
             };
+
         return SendEventAsync(eventName, payload, cancellationToken);
     }
 
@@ -111,6 +132,7 @@ internal sealed class OpenActionConnection : IAsyncDisposable
         var json = JsonSerializer.Serialize(message, JsonOptions);
         if (PluginSettings.TracePackets)
             Log.Info($"oa tx {json}");
+
         var bytes = Encoding.UTF8.GetBytes(json);
         await _sendLock.WaitAsync(cancellationToken);
         try
@@ -127,10 +149,27 @@ internal sealed class OpenActionConnection : IAsyncDisposable
     {
         if (PluginSettings.TracePackets)
             Log.Info($"oa rx {json}");
+
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         var eventName = ReadString(root, "event") ?? ReadString(root, "type") ?? "";
         var payload = root.TryGetProperty("payload", out var payloadValue) ? payloadValue : root;
+
+        Log.Info($"OpenDeck event received: {eventName}");
+        EventReceived?.Invoke(this, new OpenDeckEventArgs(eventName, json));
+
+        if (string.Equals(eventName, "deviceDidConnect", StringComparison.OrdinalIgnoreCase))
+        {
+            var device = ReadString(payload, "device") ??
+                         ReadString(root, "device") ??
+                         string.Empty;
+
+            if (PluginSettings.TraceDisplayUpdates)
+                Log.Info($"deviceDidConnect event device={device}");
+
+            DeviceDidConnect?.Invoke(this, new DeviceDidConnectEvent(device));
+            return;
+        }
 
         if (eventName is "setImage" or "set_image")
         {
@@ -138,8 +177,11 @@ internal sealed class OpenActionConnection : IAsyncDisposable
             var device = ReadString(payload, "device") ?? ReadString(root, "device") ?? "";
             var controller = ReadController(root, payload);
             var position = ReadPosition(payload);
+            Log.Info($"setImage event device={device} controller={controller} position={position} hasImage={!string.IsNullOrWhiteSpace(image)}");
+
             if (!string.IsNullOrWhiteSpace(image) && position >= 0)
                 SetImageRequested?.Invoke(this, new SetImageRequest(device, controller, position, image));
+
             return;
         }
 
@@ -165,6 +207,7 @@ internal sealed class OpenActionConnection : IAsyncDisposable
             if (row is not null && column is not null)
                 return row.Value * 8 + column.Value;
         }
+
         return -1;
     }
 
@@ -212,6 +255,7 @@ internal sealed class OpenActionConnection : IAsyncDisposable
             {
             }
         }
+
         _sendLock.Dispose();
         _socket.Dispose();
     }
@@ -225,3 +269,5 @@ internal sealed class OpenActionConnection : IAsyncDisposable
 
 internal sealed record SetImageRequest(string DeviceId, string Controller, int Position, string Image);
 internal sealed record SetBrightnessRequest(string DeviceId, double Brightness);
+internal sealed record OpenDeckEventArgs(string EventName, string Json);
+internal sealed record DeviceDidConnectEvent(string DeviceId);

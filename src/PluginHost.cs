@@ -13,6 +13,7 @@ internal sealed class PluginHost : IAsyncDisposable
     };
 
     private readonly OpenActionConnection? _openAction;
+    private readonly CancellationTokenSource _runCancellation = new();
     private LoupedeckDeviceClient? _device;
     private string _deviceId = "";
 
@@ -20,6 +21,9 @@ internal sealed class PluginHost : IAsyncDisposable
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCancellation.Token);
+        var runToken = linkedCancellation.Token;
+
         Log.Info("OpenDeck Loupedeck plugin");
         Log.Info($"Plugin log file: {Log.FilePath ?? "<disabled>"}");
         Log.Info($"Configured serial baud rate: {PluginSettings.SerialBaudRate:N0}");
@@ -27,34 +31,41 @@ internal sealed class PluginHost : IAsyncDisposable
         if (_openAction is not null)
         {
             Log.Info($"Connecting to OpenDeck at {_openAction.Uri} ...");
-            await _openAction.ConnectAsync(cancellationToken);
+            await _openAction.ConnectAsync(runToken);
+            _openAction.Closed += OnOpenDeckClosed;
+            _openAction.DeviceDidConnect += OnDeviceDidConnect;
             _openAction.SetImageRequested += OnSetImageRequested;
             _openAction.SetBrightnessRequested += OnSetBrightnessRequested;
-            _ = Task.Run(() => _openAction.ReceiveLoopAsync(cancellationToken), cancellationToken);
+            _ = Task.Run(() => _openAction.ReceiveLoopAsync(runToken), runToken);
         }
         else
         {
             Log.Info("No OpenDeck port was supplied; running device input logging only.");
         }
 
-        _device = await ConnectDeviceWithRetriesAsync(cancellationToken);
+        _device = await ConnectDeviceWithRetriesAsync(runToken);
         if (_device is null)
             return;
+
         _deviceId = BuildDeviceId(_device);
+        if (PluginSettings.TraceDiscovery)
+            Log.Info($"Resolved stable device identity '{_device.StableId}' -> '{_deviceId}'.");
+
         _device.ButtonChanged += OnButtonChanged;
         _device.KnobRotated += OnKnobRotated;
         _device.TouchChanged += OnTouchChanged;
 
-        await _device.SetBrightnessAsync(PluginSettings.InitialBrightness, cancellationToken);
-        await ClearDeviceAsync(cancellationToken);
+        await _device.SetBrightnessAsync(PluginSettings.InitialBrightness, runToken);
+        await ClearDeviceAsync(runToken);
 
         if (_openAction is not null)
         {
-            await _openAction.RegisterDeviceAsync(_deviceId, _device.Profile, cancellationToken);
+            await _openAction.RegisterDeviceAsync(_deviceId, _device.Profile, runToken);
             Log.Info($"Registered {_device.Profile.Name} as OpenDeck device {_deviceId}.");
+            await RequestRerenderAsync("post-register", runToken);
         }
 
-        await Task.Delay(Timeout.Infinite, cancellationToken);
+        await Task.Delay(Timeout.Infinite, runToken);
     }
 
     private async void OnSetImageRequested(object? sender, SetImageRequest request)
@@ -63,11 +74,15 @@ internal sealed class PluginHost : IAsyncDisposable
         {
             if (_device is null || !IsRequestForThisDevice(request.DeviceId))
                 return;
+
+            Log.Info($"setImage request controller={request.Controller} position={request.Position} device={request.DeviceId}");
+
             if (!string.Equals(request.Controller, "Keypad", StringComparison.OrdinalIgnoreCase))
             {
                 Log.Info($"Ignoring {request.Controller} image update at position {request.Position}; encoder strip rendering is not implemented yet.");
                 return;
             }
+
             if (request.Position < 0)
                 return;
 
@@ -76,6 +91,7 @@ internal sealed class PluginHost : IAsyncDisposable
                 var physicalIndex = request.Position - _device.Profile.KeyCount;
                 if (physicalIndex < 0 || physicalIndex >= _device.Profile.PhysicalButtonColorCount)
                     return;
+
                 var color = ImagePayloadDecoder.DecodeAverageColor(request.Image);
                 await _device.SetPhysicalButtonColorAsync(physicalIndex, color);
                 return;
@@ -83,6 +99,8 @@ internal sealed class PluginHost : IAsyncDisposable
 
             var canvas = ImagePayloadDecoder.DecodeToCanvas(request.Image, _device.Profile.KeySize, _device.Profile.KeySize);
             await _device.DrawCenterKeyAsync(request.Position, canvas);
+            if (PluginSettings.TraceDisplayUpdates)
+                Log.Info($"Rendered LCD image for key position {request.Position}.");
         }
         catch (Exception ex)
         {
@@ -103,6 +121,39 @@ internal sealed class PluginHost : IAsyncDisposable
         {
             Log.Error($"setBrightness failed: {ex.Message}");
         }
+    }
+
+    private void OnOpenDeckClosed(object? sender, EventArgs e)
+    {
+        Log.Info("OpenDeck connection closed. Shutting down plugin process.");
+        _runCancellation.Cancel();
+    }
+
+    private async void OnDeviceDidConnect(object? sender, DeviceDidConnectEvent e)
+    {
+        try
+        {
+            if (_openAction is null || string.IsNullOrWhiteSpace(_deviceId))
+                return;
+
+            if (!string.IsNullOrWhiteSpace(e.DeviceId) && !IsRequestForThisDevice(e.DeviceId))
+                return;
+
+            await RequestRerenderAsync("deviceDidConnect", CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"deviceDidConnect handling failed: {ex.Message}");
+        }
+    }
+
+    private async Task RequestRerenderAsync(string reason, CancellationToken cancellationToken)
+    {
+        if (_openAction is null || string.IsNullOrWhiteSpace(_deviceId))
+            return;
+
+        await _openAction.RerenderImagesAsync(_deviceId, cancellationToken);
+        Log.Info($"Requested image rerender for {_deviceId} ({reason}).");
     }
 
     private async void OnButtonChanged(object? sender, ButtonEventArgs e)
@@ -206,6 +257,7 @@ internal sealed class PluginHost : IAsyncDisposable
                 return null;
             }
         }
+
         return null;
     }
 
@@ -242,7 +294,15 @@ internal sealed class PluginHost : IAsyncDisposable
     }
 
     private static string BuildDeviceId(LoupedeckDeviceClient device)
-        => $"{PluginSettings.DeviceNamespace}-{device.Profile.Name.Replace(' ', '-')}-{device.Address}".Replace("\\", "").Replace(".", "-").Replace(":", "-");
+    {
+        var stableId = device.StableId
+            .Replace("\\", "-", StringComparison.Ordinal)
+            .Replace("/", "-", StringComparison.Ordinal)
+            .Replace(".", "-", StringComparison.Ordinal)
+            .Replace(":", "-", StringComparison.Ordinal)
+            .Replace(" ", "-", StringComparison.Ordinal);
+        return $"{PluginSettings.DeviceNamespace}-{device.Profile.Name.Replace(' ', '-')}-{stableId}";
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -252,5 +312,6 @@ internal sealed class PluginHost : IAsyncDisposable
             await _device.DisposeAsync();
         if (_openAction is not null)
             await _openAction.DisposeAsync();
+        _runCancellation.Dispose();
     }
 }

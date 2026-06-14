@@ -1,6 +1,6 @@
 namespace OpenDeck.Loupedeck;
 
-public sealed record LoupedeckDeviceInfo(int VendorId, int ProductId);
+public sealed record LoupedeckDeviceInfo(int VendorId, int ProductId, string? StableId = null);
 
 public sealed record DeviceProfile(
     string Name,

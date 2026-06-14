@@ -5,7 +5,10 @@ internal static class PluginSettings
     public const string DeviceNamespace = "LD";
     public const string PluginUuid = "io.github.brendangrant.opendeck.loupedeck";
     public static bool TracePackets = false;
+    public static bool TraceDiscovery = false;
+    public static bool TraceDisplayUpdates = false;
     public static int TraceMaxBytes = 96;
+    public static int OpenDeckConnectTimeoutSeconds = 5;
     public static uint SerialBaudRate = 921600;
     public static int SerialConnectTimeoutSeconds = 3;
     public static int SerialWriteChunkSize = 4096;
