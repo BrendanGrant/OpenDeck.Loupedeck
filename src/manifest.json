@@ -7,6 +7,7 @@
   "Icon": "images/icon",
   "CodePathWin": "win-x64/opendeck-loupedeck.exe",
   "CodePathLin": "linux-arm64/opendeck-loupedeck",
+  "CodePathMac": "osx-arm64/opendeck-loupedeck",
   "OS": [
     {
       "Platform": "windows",
@@ -15,6 +16,10 @@
     {
       "Platform": "linux",
       "MinimumVersion": "0"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "12"
     }
   ],
   "Software": {

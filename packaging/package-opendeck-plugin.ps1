@@ -18,7 +18,7 @@ $pluginPackageName = "io.github.brendangrant.opendeck.loupedeck.sdPlugin"
 $pluginDir = Join-Path $expandedRoot $pluginPackageName
 $pluginArchive = Join-Path $resolvedOutputRoot $pluginPackageName
 $temporaryZip = Join-Path $resolvedOutputRoot "io.github.brendangrant.opendeck.loupedeck.zip"
-$runtimes = @("win-x64", "linux-arm64")
+$runtimes = @("win-x64", "linux-arm64", "osx-arm64")
 
 function Test-AotSupportedOnHost {
     param(
@@ -28,6 +28,7 @@ function Test-AotSupportedOnHost {
 
     $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
     $isLinuxHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+    $isMacOSHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
 
     if ($Runtime.StartsWith("win-", [System.StringComparison]::OrdinalIgnoreCase)) {
         return $isWindowsHost
@@ -35,6 +36,10 @@ function Test-AotSupportedOnHost {
 
     if ($Runtime.StartsWith("linux-", [System.StringComparison]::OrdinalIgnoreCase)) {
         return $isLinuxHost
+    }
+
+    if ($Runtime.StartsWith("osx-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $isMacOSHost
     }
 
     return $false

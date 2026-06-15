@@ -3,7 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_PATH="${1:-$SCRIPT_DIR/../output/io.github.brendangrant.opendeck.loupedeck.sdPlugin}"
-PLUGINS_ROOT="${OPENDECK_PLUGINS_ROOT:-$HOME/.config/opendeck/plugins}"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    DEFAULT_PLUGINS_ROOT="$HOME/Library/Application Support/opendeck/plugins"
+else
+    DEFAULT_PLUGINS_ROOT="$HOME/.config/opendeck/plugins"
+fi
+
+PLUGINS_ROOT="${OPENDECK_PLUGINS_ROOT:-$DEFAULT_PLUGINS_ROOT}"
 PLUGIN_ID="${OPENDECK_PLUGIN_ID:-io.github.brendangrant.opendeck.loupedeck.sdPlugin}"
 INSTALLED_PLUGIN_DIR="$PLUGINS_ROOT/$PLUGIN_ID"
 RESTART_OPENDECK="${RESTART_OPENDECK:-1}"

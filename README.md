@@ -38,11 +38,12 @@ Not yet tested:
 
 ## Current Limitations
 
-- Supported runtime targets are currently Windows x64 and Linux ARM64
+- Supported runtime targets are currently Windows x64, Linux ARM64, and macOS ARM64
 - Only the devices listed above are currently implemented
-- The side LCD strips are not currently rendered by this plugin, so only the main 4x3 LCD grid is used for visual output
+- The side LCD strips are not currently rendered by this plugin, so Loupedeck Live-style devices use only the main LCD key grid for visual output
 - The OpenDeck UI layout for encoders and extra buttons is constrained by OpenDeck's current device model
 - Linux device identity and reconnect handling have been improved, but they still deserve more field testing
+- macOS device discovery uses I/O Registry metadata for USB CDC serial devices and needs more field testing across hubs and rebadged variants
 
 ## Installation
 
@@ -61,30 +62,31 @@ On Linux, make sure OpenDeck already has whatever device access permissions it n
 Requirements:
 
 - .NET 10 SDK
-- Windows for local packaging with the provided PowerShell script
+- PowerShell 7+ for local packaging with the provided script
 
 Build:
 
 ```powershell
-dotnet build .\src\OpenDeck.Loupedeck.csproj
+dotnet build ./src/OpenDeck.Loupedeck.csproj
 ```
 
 Package:
 
 ```powershell
-.\packaging\package-opendeck-plugin.ps1
+./packaging/package-opendeck-plugin.ps1
 ```
 
 Output:
 
 ```text
-output\io.github.brendangrant.opendeck.loupedeck.sdPlugin
+output/io.github.brendangrant.opendeck.loupedeck.sdPlugin
 ```
 
 The package contains:
 
 - `win-x64/opendeck-loupedeck.exe`
 - `linux-arm64/opendeck-loupedeck`
+- `osx-arm64/opendeck-loupedeck`
 
 ## Releases
 
@@ -92,7 +94,7 @@ This repository uses a tag-driven GitHub Actions release workflow.
 
 To publish a release:
 
-1. Update `src\manifest.json` and set the plugin `Version`.
+1. Update `src/manifest.json` and set the plugin `Version`.
 2. Commit that change.
 3. Create a matching Git tag in the form `v<version>`.
 4. Push the commit and tag.
@@ -104,7 +106,7 @@ git tag v0.1.0
 git push origin main --tags
 ```
 
-The release workflow validates that the Git tag version matches `src\manifest.json`, packages the plugin, and uploads the `.sdPlugin` archive to the GitHub Release.
+The release workflow validates that the Git tag version matches `src/manifest.json`, packages the plugin, and uploads the `.sdPlugin` archive to the GitHub Release.
 
 ## Credits
 
