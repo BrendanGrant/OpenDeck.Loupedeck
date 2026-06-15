@@ -2,16 +2,6 @@ namespace OpenDeck.Loupedeck;
 
 internal sealed class PluginHost : IAsyncDisposable
 {
-    private static readonly IReadOnlyDictionary<string, int> EncoderIndexes = new Dictionary<string, int>
-    {
-        ["knobTL"] = 0,
-        ["knobCL"] = 1,
-        ["knobBL"] = 2,
-        ["knobTR"] = 3,
-        ["knobCR"] = 4,
-        ["knobBR"] = 5,
-    };
-
     private readonly OpenActionConnection? _openAction;
     private readonly CancellationTokenSource _runCancellation = new();
     private LoupedeckDeviceClient? _device;
@@ -68,59 +58,51 @@ internal sealed class PluginHost : IAsyncDisposable
         await Task.Delay(Timeout.Infinite, runToken);
     }
 
-    private async void OnSetImageRequested(object? sender, SetImageRequest request)
+    private void OnSetImageRequested(object? sender, SetImageRequest request)
+        => _ = RunEventHandlerAsync(() => OnSetImageRequestedAsync(request), $"setImage failed for position {request.Position}");
+
+    private async Task OnSetImageRequestedAsync(SetImageRequest request)
     {
-        try
+        if (_device is null || !IsRequestForThisDevice(request.DeviceId))
+            return;
+
+        Log.Info($"setImage request controller={request.Controller} position={request.Position} device={request.DeviceId}");
+
+        if (!string.Equals(request.Controller, "Keypad", StringComparison.OrdinalIgnoreCase))
         {
-            if (_device is null || !IsRequestForThisDevice(request.DeviceId))
-                return;
-
-            Log.Info($"setImage request controller={request.Controller} position={request.Position} device={request.DeviceId}");
-
-            if (!string.Equals(request.Controller, "Keypad", StringComparison.OrdinalIgnoreCase))
-            {
-                Log.Info($"Ignoring {request.Controller} image update at position {request.Position}; encoder strip rendering is not implemented yet.");
-                return;
-            }
-
-            if (request.Position < 0)
-                return;
-
-            if (request.Position >= _device.Profile.KeyCount)
-            {
-                var physicalIndex = request.Position - _device.Profile.KeyCount;
-                if (physicalIndex < 0 || physicalIndex >= _device.Profile.PhysicalButtonColorCount)
-                    return;
-
-                var color = ImagePayloadDecoder.DecodeAverageColor(request.Image);
-                await _device.SetPhysicalButtonColorAsync(physicalIndex, color);
-                return;
-            }
-
-            var canvas = ImagePayloadDecoder.DecodeToCanvas(request.Image, _device.Profile.KeySize, _device.Profile.KeySize);
-            await _device.DrawCenterKeyAsync(request.Position, canvas);
-            if (PluginSettings.TraceDisplayUpdates)
-                Log.Info($"Rendered LCD image for key position {request.Position}.");
+            Log.Info($"Ignoring {request.Controller} image update at position {request.Position}; encoder strip rendering is not implemented yet.");
+            return;
         }
-        catch (Exception ex)
+
+        if (request.Position < 0)
+            return;
+
+        if (request.Position >= _device.Profile.KeyCount)
         {
-            Log.Error($"setImage failed for position {request.Position}: {ex.Message}");
+            var physicalIndex = request.Position - _device.Profile.KeyCount;
+            if (physicalIndex < 0 || physicalIndex >= _device.Profile.PhysicalButtonColorCount)
+                return;
+
+            var color = ImagePayloadDecoder.DecodeAverageColor(request.Image);
+            await _device.SetPhysicalButtonColorAsync(physicalIndex, color);
+            return;
         }
+
+        var canvas = ImagePayloadDecoder.DecodeToCanvas(request.Image, _device.Profile.KeySize, _device.Profile.KeySize);
+        await _device.DrawCenterKeyAsync(request.Position, canvas);
+        if (PluginSettings.TraceDisplayUpdates)
+            Log.Info($"Rendered LCD image for key position {request.Position}.");
     }
 
-    private async void OnSetBrightnessRequested(object? sender, SetBrightnessRequest request)
+    private void OnSetBrightnessRequested(object? sender, SetBrightnessRequest request)
+        => _ = RunEventHandlerAsync(() => OnSetBrightnessRequestedAsync(request), "setBrightness failed");
+
+    private async Task OnSetBrightnessRequestedAsync(SetBrightnessRequest request)
     {
-        try
-        {
-            if (_device is null || !IsRequestForThisDevice(request.DeviceId))
-                return;
-            await _device.SetBrightnessAsync(request.Brightness);
-            Log.Info($"brightness {request.Brightness:0.00}");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"setBrightness failed: {ex.Message}");
-        }
+        if (_device is null || !IsRequestForThisDevice(request.DeviceId))
+            return;
+        await _device.SetBrightnessAsync(request.Brightness);
+        Log.Info($"brightness {request.Brightness:0.00}");
     }
 
     private void OnOpenDeckClosed(object? sender, EventArgs e)
@@ -129,22 +111,18 @@ internal sealed class PluginHost : IAsyncDisposable
         _runCancellation.Cancel();
     }
 
-    private async void OnDeviceDidConnect(object? sender, DeviceDidConnectEvent e)
+    private void OnDeviceDidConnect(object? sender, DeviceDidConnectEvent e)
+        => _ = RunEventHandlerAsync(() => OnDeviceDidConnectAsync(e), "deviceDidConnect handling failed");
+
+    private async Task OnDeviceDidConnectAsync(DeviceDidConnectEvent e)
     {
-        try
-        {
-            if (_openAction is null || string.IsNullOrWhiteSpace(_deviceId))
-                return;
+        if (_openAction is null || string.IsNullOrWhiteSpace(_deviceId))
+            return;
 
-            if (!string.IsNullOrWhiteSpace(e.DeviceId) && !IsRequestForThisDevice(e.DeviceId))
-                return;
+        if (!string.IsNullOrWhiteSpace(e.DeviceId) && !IsRequestForThisDevice(e.DeviceId))
+            return;
 
-            await RequestRerenderAsync("deviceDidConnect", CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"deviceDidConnect handling failed: {ex.Message}");
-        }
+        await RequestRerenderAsync("deviceDidConnect", CancellationToken.None);
     }
 
     private async Task RequestRerenderAsync(string reason, CancellationToken cancellationToken)
@@ -156,73 +134,61 @@ internal sealed class PluginHost : IAsyncDisposable
         Log.Info($"Requested image rerender for {_deviceId} ({reason}).");
     }
 
-    private async void OnButtonChanged(object? sender, ButtonEventArgs e)
+    private void OnButtonChanged(object? sender, ButtonEventArgs e)
+        => _ = RunEventHandlerAsync(() => OnButtonChangedAsync(e), "button forward failed");
+
+    private async Task OnButtonChangedAsync(ButtonEventArgs e)
     {
-        try
+        Log.Info($"button {e.Button} {(e.IsDown ? "down" : "up")}");
+        if (_openAction is null)
+            return;
+
+        if (LoupedeckControlMap.TryGetEncoderIndex(e.Button, out var encoder))
         {
-            Log.Info($"button {e.Button} {(e.IsDown ? "down" : "up")}");
-            if (_openAction is null)
+            if (_device is not null && encoder >= _device.Profile.EncoderCount)
                 return;
-
-            if (EncoderIndexes.TryGetValue(e.Button, out var encoder))
-            {
-                if (_device is not null && encoder >= _device.Profile.EncoderCount)
-                    return;
-                if (e.IsDown)
-                    await _openAction.EncoderDownAsync(_deviceId, encoder, CancellationToken.None);
-                else
-                    await _openAction.EncoderUpAsync(_deviceId, encoder, CancellationToken.None);
-                return;
-            }
-
-            if (TryMapPhysicalButton(e.Button, out var key))
-            {
-                if (e.IsDown)
-                    await _openAction.KeyDownAsync(_deviceId, key, CancellationToken.None);
-                else
-                    await _openAction.KeyUpAsync(_deviceId, key, CancellationToken.None);
-            }
+            if (e.IsDown)
+                await _openAction.EncoderDownAsync(_deviceId, encoder, CancellationToken.None);
+            else
+                await _openAction.EncoderUpAsync(_deviceId, encoder, CancellationToken.None);
+            return;
         }
-        catch (Exception ex)
-        {
-            Log.Error($"button forward failed: {ex.Message}");
-        }
-    }
 
-    private async void OnKnobRotated(object? sender, KnobEventArgs e)
-    {
-        try
+        if (_device is not null && LoupedeckControlMap.TryMapPhysicalButton(e.Button, _device.Profile, out var key))
         {
-            Log.Info($"knob {e.Knob} rotate {e.Delta:+0;-0;0}");
-            if (_openAction is not null && EncoderIndexes.TryGetValue(e.Knob, out var encoder))
-            {
-                if (_device is not null && encoder >= _device.Profile.EncoderCount)
-                    return;
-                await _openAction.EncoderChangeAsync(_deviceId, encoder, e.Delta, CancellationToken.None);
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"knob forward failed: {ex.Message}");
-        }
-    }
-
-    private async void OnTouchChanged(object? sender, TouchEventArgs e)
-    {
-        try
-        {
-            Log.Info($"{e.Kind} x={e.X} y={e.Y} target={e.Target}");
-            if (_openAction is null || !TryMapTouchTarget(e.Target, out var key))
-                return;
-            if (e.Kind.StartsWith("touch-end", StringComparison.Ordinal))
-                await _openAction.KeyUpAsync(_deviceId, key, CancellationToken.None);
-            else if (e.Kind.StartsWith("touch", StringComparison.Ordinal))
+            if (e.IsDown)
                 await _openAction.KeyDownAsync(_deviceId, key, CancellationToken.None);
+            else
+                await _openAction.KeyUpAsync(_deviceId, key, CancellationToken.None);
         }
-        catch (Exception ex)
+    }
+
+    private void OnKnobRotated(object? sender, KnobEventArgs e)
+        => _ = RunEventHandlerAsync(() => OnKnobRotatedAsync(e), "knob forward failed");
+
+    private async Task OnKnobRotatedAsync(KnobEventArgs e)
+    {
+        Log.Info($"knob {e.Knob} rotate {e.Delta:+0;-0;0}");
+        if (_openAction is not null && LoupedeckControlMap.TryGetEncoderIndex(e.Knob, out var encoder))
         {
-            Log.Error($"touch forward failed: {ex.Message}");
+            if (_device is not null && encoder >= _device.Profile.EncoderCount)
+                return;
+            await _openAction.EncoderChangeAsync(_deviceId, encoder, e.Delta, CancellationToken.None);
         }
+    }
+
+    private void OnTouchChanged(object? sender, TouchEventArgs e)
+        => _ = RunEventHandlerAsync(() => OnTouchChangedAsync(e), "touch forward failed");
+
+    private async Task OnTouchChangedAsync(TouchEventArgs e)
+    {
+        Log.Info($"{e.Kind} x={e.X} y={e.Y} target={e.Target}");
+        if (_openAction is null || !LoupedeckControlMap.TryMapTouchTarget(e.Target, out var key))
+            return;
+        if (e.Kind.StartsWith("touch-end", StringComparison.Ordinal))
+            await _openAction.KeyUpAsync(_deviceId, key, CancellationToken.None);
+        else if (e.Kind.StartsWith("touch", StringComparison.Ordinal))
+            await _openAction.KeyDownAsync(_deviceId, key, CancellationToken.None);
     }
 
     private async Task ClearDeviceAsync(CancellationToken cancellationToken)
@@ -265,32 +231,16 @@ internal sealed class PluginHost : IAsyncDisposable
         => string.IsNullOrWhiteSpace(requestDeviceId) ||
            string.Equals(requestDeviceId, _deviceId, StringComparison.OrdinalIgnoreCase);
 
-    private bool TryMapPhysicalButton(string button, out int key)
+    private static async Task RunEventHandlerAsync(Func<Task> action, string errorPrefix)
     {
-        key = -1;
-        if (_device is null)
-            return false;
-        if (button.StartsWith("round", StringComparison.Ordinal) &&
-            int.TryParse(button[5..], out var roundIndex))
+        try
         {
-            key = _device.Profile.KeyCount + roundIndex;
-            return true;
+            await action();
         }
-        if (button.StartsWith("x-key", StringComparison.Ordinal) &&
-            int.TryParse(button[5..], out var xIndex))
+        catch (Exception ex)
         {
-            key = xIndex;
-            return true;
+            Log.Error($"{errorPrefix}: {ex.Message}");
         }
-        return false;
-    }
-
-    private static bool TryMapTouchTarget(string target, out int key)
-    {
-        key = -1;
-        const string prefix = "LCD-key-";
-        return target.StartsWith(prefix, StringComparison.Ordinal) &&
-               int.TryParse(target[prefix.Length..], out key);
     }
 
     private static string BuildDeviceId(LoupedeckDeviceClient device)

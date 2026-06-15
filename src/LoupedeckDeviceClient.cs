@@ -28,40 +28,6 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     private const int FramebufferHeightOffset = 8;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(PluginSettings.CommandTimeoutSeconds);
 
-    private static readonly IReadOnlyDictionary<byte, string> Buttons = new Dictionary<byte, string>
-    {
-        [0x00] = "knobCT",
-        [0x01] = "knobTL",
-        [0x02] = "knobCL",
-        [0x03] = "knobBL",
-        [0x04] = "knobTR",
-        [0x05] = "knobCR",
-        [0x06] = "knobBR",
-        [0x07] = "round0",
-        [0x08] = "round1",
-        [0x09] = "round2",
-        [0x0a] = "round3",
-        [0x0b] = "round4",
-        [0x0c] = "round5",
-        [0x0d] = "round6",
-        [0x0e] = "round7",
-        [0x1b] = "x-key0",
-        [0x1c] = "x-key1",
-        [0x1d] = "x-key2",
-        [0x1e] = "x-key3",
-        [0x1f] = "x-key4",
-        [0x20] = "x-key5",
-        [0x21] = "x-key6",
-        [0x22] = "x-key7",
-        [0x23] = "x-key8",
-        [0x24] = "x-key9",
-        [0x25] = "x-key10",
-        [0x26] = "x-key11",
-        [0x27] = "x-key12",
-        [0x28] = "x-key13",
-        [0x29] = "x-key14",
-    };
-
     private static readonly byte[] MainDisplay = { DisplayIdentifierHigh, DisplayIdentifierLow };
     private readonly ILoupedeckTransport _transport;
     private readonly DeviceProfile _profile;
@@ -290,15 +256,15 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         switch (command)
         {
             case ButtonPress when data.Length >= 2:
-                ButtonChanged?.Invoke(this, new ButtonEventArgs(ButtonName(data[0]), data[1] == 0));
+                ButtonChanged?.Invoke(this, new ButtonEventArgs(LoupedeckControlMap.GetButtonName(data[0]), data[1] == 0));
                 break;
             case KnobRotate when data.Length >= 2:
-                KnobRotated?.Invoke(this, new KnobEventArgs(ButtonName(data[0]), (sbyte)data[1]));
+                KnobRotated?.Invoke(this, new KnobEventArgs(LoupedeckControlMap.GetButtonName(data[0]), (sbyte)data[1]));
                 break;
             case Touch or TouchCt or TouchEnd or TouchEndCt when data.Length >= 6:
                 var x = BinaryPrimitives.ReadUInt16BigEndian(data[1..]);
                 var y = BinaryPrimitives.ReadUInt16BigEndian(data[3..]);
-                TouchChanged?.Invoke(this, new TouchEventArgs(TouchKind(command), x, y, data[5], GetTarget(x, y)));
+                TouchChanged?.Invoke(this, new TouchEventArgs(TouchKind(command), x, y, data[5], LoupedeckControlMap.GetTouchTarget(_profile, x, y)));
                 break;
         }
 
@@ -315,8 +281,6 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         Log.Info($"{direction} {Convert.ToHexString(shown)}{suffix}");
     }
 
-    private static string ButtonName(byte id) => Buttons.TryGetValue(id, out var name) ? name : $"0x{id:x2}";
-
     private static string TouchKind(byte command) => command switch
     {
         Touch => "touch",
@@ -325,17 +289,6 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         TouchEndCt => "touch-end-ct",
         _ => "unknown",
     };
-
-    private string GetTarget(int x, int y)
-    {
-        if (_profile.HasSideStrips && x < _profile.SideStripWidth)
-            return "left-strip";
-        if (_profile.HasSideStrips && x >= _profile.RightStripX)
-            return "right-strip";
-        if (x < _profile.CenterX || x >= _profile.CenterX + _profile.CenterWidth || y < 0 || y >= _profile.CenterHeight)
-            return "display";
-        return $"LCD-key-{y / _profile.KeySize * _profile.Columns + (x - _profile.CenterX) / _profile.KeySize}";
-    }
 
     public async ValueTask DisposeAsync()
     {
