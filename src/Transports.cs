@@ -1,5 +1,6 @@
 using System.Net.NetworkInformation;
 using System.Net.WebSockets;
+using System.Runtime.Versioning;
 using Microsoft.Win32;
 
 namespace OpenDeck.Loupedeck;
@@ -17,18 +18,49 @@ internal static class LoupedeckTransportDiscovery
 {
     public static IEnumerable<ILoupedeckTransport> FindCandidates()
     {
-        foreach (var candidate in FindSerialPorts())
+        var serialCandidates = FindSerialPorts().ToArray();
+        if (PluginSettings.TraceDiscovery)
+        {
+            if (serialCandidates.Length == 0)
+            {
+                Log.Info("No serial transport candidates were discovered.");
+            }
+            else
+            {
+                Log.Info($"Serial transport candidates: {string.Join(", ", serialCandidates.Select(candidate => $"{candidate.PortName} ({candidate.DeviceInfo.VendorId:x4}:{candidate.DeviceInfo.ProductId:x4})"))}");
+            }
+        }
+
+        foreach (var candidate in serialCandidates)
             yield return new SerialLoupedeckTransport(candidate.PortName, candidate.DeviceInfo);
 
-        foreach (var host in FindWebSocketHosts())
+        var webSocketHosts = FindWebSocketHosts().ToArray();
+        if (PluginSettings.TraceDiscovery && webSocketHosts.Length == 0)
+            Log.Info("No USB network WebSocket transport candidates were discovered.");
+
+        foreach (var host in webSocketHosts)
             yield return new WebSocketLoupedeckTransport(host);
     }
 
     private static IEnumerable<SerialCandidate> FindSerialPorts()
     {
-        if (!OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var candidate in FindWindowsSerialPorts())
+                yield return candidate;
             yield break;
+        }
 
+        if (OperatingSystem.IsLinux())
+        {
+            foreach (var candidate in FindLinuxSerialPorts())
+                yield return candidate;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static IEnumerable<SerialCandidate> FindWindowsSerialPorts()
+    {
         using var usb = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\USB");
         if (usb is null)
             yield break;
@@ -36,7 +68,7 @@ internal static class LoupedeckTransportDiscovery
         foreach (var deviceKeyName in usb.GetSubKeyNames())
         {
             var info = TryParseDeviceInfo(deviceKeyName);
-            if (info is null || (info.VendorId != 0x2ec2 && info.VendorId != 0x1532))
+            if (info is null || !IsSupportedVendor(info.VendorId))
                 continue;
 
             using var device = usb.OpenSubKey(deviceKeyName);
@@ -52,6 +84,103 @@ internal static class LoupedeckTransportDiscovery
         }
     }
 
+    private static IEnumerable<SerialCandidate> FindLinuxSerialPorts()
+    {
+        var portPaths = System.IO.Ports.SerialPort.GetPortNames()
+            .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (portPaths.Length == 0)
+            yield break;
+
+        var matched = false;
+        foreach (var portPath in portPaths)
+        {
+            var info = TryReadLinuxDeviceInfo(portPath);
+            if (info is null || !IsSupportedVendor(info.VendorId))
+                continue;
+
+            matched = true;
+            var stableId = TryGetLinuxStableId(portPath) ?? portPath;
+            yield return new SerialCandidate(portPath, info with { StableId = stableId });
+        }
+
+        if (matched)
+            yield break;
+
+        foreach (var portPath in portPaths.Where(IsLikelyLinuxLoupedeckPort))
+        {
+            if (PluginSettings.TraceDiscovery)
+                Log.Info($"Falling back to probing likely Linux CDC serial port {portPath}.");
+
+            var stableId = TryGetLinuxStableId(portPath) ?? portPath;
+            yield return new SerialCandidate(
+                portPath,
+                new LoupedeckDeviceInfo(KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive) { StableId = stableId });
+        }
+    }
+
+    private static bool IsLikelyLinuxLoupedeckPort(string portPath)
+    {
+        var name = Path.GetFileName(portPath);
+        return name.StartsWith("ttyACM", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith("ttyUSB", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveLinuxDevicePath(FileSystemInfo link)
+    {
+        try
+        {
+            var target = link.ResolveLinkTarget(true);
+            return target?.FullName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryGetLinuxStableId(string portPath)
+    {
+        try
+        {
+            var byIdDirectory = new DirectoryInfo("/dev/serial/by-id");
+            if (byIdDirectory.Exists)
+            {
+                var canonicalPortPath = Path.GetFullPath(portPath);
+                foreach (var link in byIdDirectory.EnumerateFileSystemInfos())
+                {
+                    var resolved = ResolveLinuxDevicePath(link);
+                    if (resolved is not null &&
+                        string.Equals(Path.GetFullPath(resolved), canonicalPortPath, StringComparison.Ordinal))
+                    {
+                        return link.FullName;
+                    }
+                }
+            }
+
+            var ttyName = Path.GetFileName(portPath);
+            var sysfsBase = Path.Combine("/sys/class/tty", ttyName, "device");
+            var serialFile = Path.Combine(sysfsBase, "serial");
+            if (File.Exists(serialFile))
+            {
+                var serial = File.ReadAllText(serialFile).Trim();
+                if (!string.IsNullOrWhiteSpace(serial))
+                    return serial;
+            }
+
+            var usbNode = Directory.Exists(sysfsBase) ? new DirectoryInfo(sysfsBase).Name : null;
+            return string.IsNullOrWhiteSpace(usbNode) ? null : usbNode;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsSupportedVendor(int vendorId)
+        => vendorId is KnownUsbIds.VendorLoupedeck or KnownUsbIds.VendorRazer;
+
     private static LoupedeckDeviceInfo? TryParseDeviceInfo(string keyName)
     {
         var parts = keyName.Split('&');
@@ -59,9 +188,39 @@ internal static class LoupedeckTransportDiscovery
         var pidPart = parts.FirstOrDefault(part => part.StartsWith("PID_", StringComparison.OrdinalIgnoreCase));
         if (vidPart is null || pidPart is null)
             return null;
+
         return new LoupedeckDeviceInfo(
             Convert.ToInt32(vidPart[4..], 16),
             Convert.ToInt32(pidPart[4..], 16));
+    }
+
+    private static LoupedeckDeviceInfo? TryReadLinuxDeviceInfo(string portPath)
+    {
+        try
+        {
+            var ttyName = Path.GetFileName(portPath);
+            var sysfsBase = Path.Combine("/sys/class/tty", ttyName, "device");
+            var current = new DirectoryInfo(sysfsBase);
+
+            while (current is not null)
+            {
+                var vendorPath = Path.Combine(current.FullName, "idVendor");
+                var productPath = Path.Combine(current.FullName, "idProduct");
+                if (File.Exists(vendorPath) && File.Exists(productPath))
+                {
+                    var vendor = Convert.ToInt32(File.ReadAllText(vendorPath).Trim(), 16);
+                    var product = Convert.ToInt32(File.ReadAllText(productPath).Trim(), 16);
+                    return new LoupedeckDeviceInfo(vendor, product);
+                }
+
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private static IEnumerable<string> FindWebSocketHosts()
@@ -84,8 +243,9 @@ internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
     private readonly Uri _uri;
 
     public WebSocketLoupedeckTransport(string host) => _uri = new Uri($"ws://{host}");
+
     public string Address => _uri.ToString();
-    public LoupedeckDeviceInfo DeviceInfo { get; } = new(0x2ec2, 0x0004);
+    public LoupedeckDeviceInfo DeviceInfo { get; } = new(KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive);
 
     public Task ConnectAsync(CancellationToken cancellationToken) => _socket.ConnectAsync(_uri, cancellationToken);
 
@@ -104,6 +264,7 @@ internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
                 return null;
             message.Write(chunk, 0, result.Count);
         } while (!result.EndOfMessage);
+
         return message.ToArray();
     }
 
@@ -119,6 +280,7 @@ internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
             {
             }
         }
+
         _socket.Dispose();
     }
 }

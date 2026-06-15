@@ -31,14 +31,18 @@ Tested during development:
 - Razer Stream Controller
 - Razer Stream Controller X
 
+Not yet tested:
+
+- other Loupedeck-family devices
+- other vendor-rebadged variants that present a different USB identity
+
 ## Current Limitations
 
-- Windows only
+- Supported runtime targets are currently Windows x64 and Linux ARM64
 - Only the devices listed above are currently implemented
-- Requires OpenDeck device-plugin support
 - The side LCD strips are not currently rendered by this plugin, so only the main 4x3 LCD grid is used for visual output
 - The OpenDeck UI layout for encoders and extra buttons is constrained by OpenDeck's current device model
-- Cross-platform packaging and device access are not implemented yet
+- Linux device identity and reconnect handling have been improved, but they still deserve more field testing
 
 ## Installation
 
@@ -50,23 +54,25 @@ Tested during development:
 
 Make sure the official Loupedeck software is not running while this plugin is using the device.
 
+On Linux, make sure OpenDeck already has whatever device access permissions it needs for your distribution.
+
 ## Building
 
 Requirements:
 
-- Windows
 - .NET 10 SDK
+- Windows for local packaging with the provided PowerShell script
 
 Build:
 
 ```powershell
-dotnet build .\OpenDeck.Loupedeck\src\OpenDeck.Loupedeck.csproj
+dotnet build .\src\OpenDeck.Loupedeck.csproj
 ```
 
 Package:
 
 ```powershell
-.\OpenDeck.Loupedeck\packaging\package-opendeck-plugin.ps1
+.\packaging\package-opendeck-plugin.ps1
 ```
 
 Output:
@@ -74,6 +80,11 @@ Output:
 ```text
 output\io.github.brendangrant.opendeck.loupedeck.sdPlugin
 ```
+
+The package contains:
+
+- `win-x64/opendeck-loupedeck.exe`
+- `linux-arm64/opendeck-loupedeck`
 
 ## Releases
 

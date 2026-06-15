@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [string]$OutputRoot = "output"
+    [string]$OutputRoot = "output",
+    [bool]$PublishAot = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,36 +11,80 @@ $repoRoot = Resolve-Path (Join-Path $scriptRoot "..")
 $projectFile = Join-Path $repoRoot "src\OpenDeck.Loupedeck.csproj"
 
 $env:DOTNET_CLI_HOME = Join-Path $repoRoot ".dotnet_cli"
-$publishDir = Join-Path $repoRoot "output\publish\opendeck-loupedeck-win"
 $resolvedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $OutputRoot))
-if (Test-Path $resolvedOutputRoot) {
-    Remove-Item -LiteralPath $resolvedOutputRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Force $resolvedOutputRoot | Out-Null
+$publishRoot = Join-Path $resolvedOutputRoot "publish"
 $expandedRoot = Join-Path $resolvedOutputRoot "expanded"
 $pluginPackageName = "io.github.brendangrant.opendeck.loupedeck.sdPlugin"
 $pluginDir = Join-Path $expandedRoot $pluginPackageName
 $pluginArchive = Join-Path $resolvedOutputRoot $pluginPackageName
 $temporaryZip = Join-Path $resolvedOutputRoot "io.github.brendangrant.opendeck.loupedeck.zip"
+$runtimes = @("win-x64", "linux-arm64")
 
-dotnet publish $projectFile `
-    -c $Configuration `
-    -r win-x64 `
-    --self-contained false `
-    -p:DebugSymbols=false `
-    -p:DebugType=None `
-    -o $publishDir
-if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish failed with exit code $LASTEXITCODE. Make sure a .NET 10 SDK is installed and selected."
+function Test-AotSupportedOnHost {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Runtime
+    )
+
+    $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $isLinuxHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+
+    if ($Runtime.StartsWith("win-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $isWindowsHost
+    }
+
+    if ($Runtime.StartsWith("linux-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $isLinuxHost
+    }
+
+    return $false
 }
 
-if (Test-Path $pluginDir) {
-    Remove-Item -LiteralPath $pluginDir -Recurse -Force
+if (Test-Path $resolvedOutputRoot) {
+    Remove-Item -LiteralPath $resolvedOutputRoot -Recurse -Force
 }
 
+New-Item -ItemType Directory -Force $resolvedOutputRoot | Out-Null
+New-Item -ItemType Directory -Force $publishRoot | Out-Null
 New-Item -ItemType Directory -Force $expandedRoot | Out-Null
 New-Item -ItemType Directory -Force $pluginDir | Out-Null
-Copy-Item -Path (Join-Path $publishDir "*") -Destination $pluginDir -Recurse -Force
+
+foreach ($runtime in $runtimes) {
+    $publishDir = Join-Path $publishRoot $runtime
+    $pluginRuntimeDir = Join-Path $pluginDir $runtime
+    $publishAotForRuntime = $PublishAot -and (Test-AotSupportedOnHost -Runtime $runtime)
+
+    if ($PublishAot -and -not $publishAotForRuntime) {
+        Write-Warning "Native AOT for runtime '$runtime' is not supported from this host OS. Falling back to self-contained non-AOT publish."
+    }
+
+    Write-Host "Publishing $runtime (AOT=$publishAotForRuntime) ..."
+    dotnet publish $projectFile `
+        -c $Configuration `
+        -r $runtime `
+        --self-contained true `
+        -p:DebugSymbols=false `
+        -p:DebugType=None `
+        -p:PublishAot=$publishAotForRuntime `
+        -o $publishDir
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet publish failed for runtime '$runtime' with exit code $LASTEXITCODE."
+    }
+
+    New-Item -ItemType Directory -Force $pluginRuntimeDir | Out-Null
+    Copy-Item -Path (Join-Path $publishDir "*") -Destination $pluginRuntimeDir -Recurse -Force
+    if (Test-Path (Join-Path $pluginRuntimeDir "manifest.json")) {
+        Remove-Item -LiteralPath (Join-Path $pluginRuntimeDir "manifest.json") -Force
+    }
+    if (Test-Path (Join-Path $pluginRuntimeDir "images")) {
+        Remove-Item -LiteralPath (Join-Path $pluginRuntimeDir "images") -Recurse -Force
+    }
+}
+
+Copy-Item -LiteralPath (Join-Path $repoRoot "src\manifest.json") -Destination (Join-Path $pluginDir "manifest.json") -Force
+New-Item -ItemType Directory -Force (Join-Path $pluginDir "images") | Out-Null
+Copy-Item -Path (Join-Path $repoRoot "src\images\*") -Destination (Join-Path $pluginDir "images") -Recurse -Force
 
 if (Test-Path $pluginArchive) {
     Remove-Item -LiteralPath $pluginArchive -Force

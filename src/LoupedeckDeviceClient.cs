@@ -5,6 +5,7 @@ namespace OpenDeck.Loupedeck;
 
 public sealed class LoupedeckDeviceClient : IAsyncDisposable
 {
+    private const byte SetPhysicalButtonColorBase = 0x07;
     private const byte ButtonPress = 0x00;
     private const byte KnobRotate = 0x01;
     private const byte SetColor = 0x02;
@@ -16,43 +17,18 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     private const byte TouchCt = 0x52;
     private const byte TouchEnd = 0x6d;
     private const byte TouchEndCt = 0x72;
+    private const byte DisplayIdentifierHigh = 0x00;
+    private const byte DisplayIdentifierLow = 0x4d;
+    private const byte RefreshDisplayIdentifier = 0x4d;
+    private const byte RefreshCommitMode = 0x01;
+    private const int FramebufferHeaderSize = 10;
+    private const int FramebufferXOffset = 2;
+    private const int FramebufferYOffset = 4;
+    private const int FramebufferWidthOffset = 6;
+    private const int FramebufferHeightOffset = 8;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(PluginSettings.CommandTimeoutSeconds);
 
-    private static readonly IReadOnlyDictionary<byte, string> Buttons = new Dictionary<byte, string>
-    {
-        [0x00] = "knobCT",
-        [0x01] = "knobTL",
-        [0x02] = "knobCL",
-        [0x03] = "knobBL",
-        [0x04] = "knobTR",
-        [0x05] = "knobCR",
-        [0x06] = "knobBR",
-        [0x07] = "round0",
-        [0x08] = "round1",
-        [0x09] = "round2",
-        [0x0a] = "round3",
-        [0x0b] = "round4",
-        [0x0c] = "round5",
-        [0x0d] = "round6",
-        [0x0e] = "round7",
-        [0x1b] = "x-key0",
-        [0x1c] = "x-key1",
-        [0x1d] = "x-key2",
-        [0x1e] = "x-key3",
-        [0x1f] = "x-key4",
-        [0x20] = "x-key5",
-        [0x21] = "x-key6",
-        [0x22] = "x-key7",
-        [0x23] = "x-key8",
-        [0x24] = "x-key9",
-        [0x25] = "x-key10",
-        [0x26] = "x-key11",
-        [0x27] = "x-key12",
-        [0x28] = "x-key13",
-        [0x29] = "x-key14",
-    };
-
-    private static readonly byte[] MainDisplay = { 0x00, 0x4d };
+    private static readonly byte[] MainDisplay = { DisplayIdentifierHigh, DisplayIdentifierLow };
     private readonly ILoupedeckTransport _transport;
     private readonly DeviceProfile _profile;
     private readonly ConcurrentDictionary<byte, TaskCompletionSource<byte[]>> _pending = new();
@@ -73,6 +49,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     public event EventHandler<TouchEventArgs>? TouchChanged;
 
     public string Address => _transport.Address;
+    public string StableId => _transport.DeviceInfo.StableId ?? _transport.Address;
     public DeviceProfile Profile => _profile;
 
     public static async Task<LoupedeckDeviceClient> ConnectFirstAsync(CancellationToken cancellationToken = default)
@@ -114,23 +91,23 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
 
     public Task SetPhysicalButtonColorAsync(int index, RgbColor color, CancellationToken cancellationToken = default)
     {
-        if (index is < 0 or > 7)
+        if (index < 0 || index >= _profile.PhysicalButtonColorCount)
             throw new ArgumentOutOfRangeException(nameof(index));
         return SendCommandAsync(
             SetColor,
-            new[] { (byte)(0x07 + index), color.Red, color.Green, color.Blue },
+            new[] { (byte)(SetPhysicalButtonColorBase + index), color.Red, color.Green, color.Blue },
             waitForAck: false,
             cancellationToken);
     }
 
     public Task SetPhysicalButtonColorsAsync(IReadOnlyList<RgbColor> colors, CancellationToken cancellationToken = default)
     {
-        if (colors.Count > 8)
+        if (colors.Count > _profile.PhysicalButtonColorCount)
             throw new ArgumentOutOfRangeException(nameof(colors));
         var data = new byte[colors.Count * 4];
         for (var index = 0; index < colors.Count; index++)
         {
-            data[index * 4] = (byte)(0x07 + index);
+            data[index * 4] = (byte)(SetPhysicalButtonColorBase + index);
             data[index * 4 + 1] = colors[index].Red;
             data[index * 4 + 2] = colors[index].Green;
             data[index * 4 + 3] = colors[index].Blue;
@@ -150,10 +127,10 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     }
 
     public Task DrawLeftStripAsync(Rgb565Canvas canvas, bool refresh = true, CancellationToken cancellationToken = default)
-        => DrawStripAsync(0, canvas, refresh, cancellationToken);
+        => DrawStripAsync(_profile.LeftStripX, canvas, refresh, cancellationToken);
 
     public Task DrawRightStripAsync(Rgb565Canvas canvas, bool refresh = true, CancellationToken cancellationToken = default)
-        => DrawStripAsync(420, canvas, refresh, cancellationToken);
+        => DrawStripAsync(_profile.RightStripX, canvas, refresh, cancellationToken);
 
     public Task DrawFullDisplayAsync(Rgb565Canvas canvas, bool refresh = true, CancellationToken cancellationToken = default)
     {
@@ -162,20 +139,15 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         return DrawRectangleAsync(0, 0, canvas, refresh, cancellationToken);
     }
 
-    public async Task DrawRectangleAsync(
-        int x,
-        int y,
-        Rgb565Canvas canvas,
-        bool refresh = true,
-        CancellationToken cancellationToken = default)
+    public async Task DrawRectangleAsync(int x, int y, Rgb565Canvas canvas, bool refresh = true, CancellationToken cancellationToken = default)
     {
-        var data = new byte[10 + canvas.Pixels.Length];
+        var data = new byte[FramebufferHeaderSize + canvas.Pixels.Length];
         MainDisplay.CopyTo(data, 0);
-        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(2), checked((ushort)x));
-        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(4), checked((ushort)y));
-        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(6), checked((ushort)canvas.Width));
-        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(8), checked((ushort)canvas.Height));
-        canvas.Pixels.CopyTo(data, 10);
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(FramebufferXOffset), checked((ushort)x));
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(FramebufferYOffset), checked((ushort)y));
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(FramebufferWidthOffset), checked((ushort)canvas.Width));
+        BinaryPrimitives.WriteUInt16BigEndian(data.AsSpan(FramebufferHeightOffset), checked((ushort)canvas.Height));
+        canvas.Pixels.CopyTo(data, FramebufferHeaderSize);
         await SendCommandAsync(Framebuffer, data, waitForAck: PluginSettings.WaitForFramebufferAck, cancellationToken);
         if (PluginSettings.PostFramebufferDelayMs > 0)
             await Task.Delay(PluginSettings.PostFramebufferDelayMs, cancellationToken);
@@ -187,17 +159,15 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
     {
         var repeatCount = Math.Max(1, PluginSettings.RefreshRepeatCount);
         for (var index = 0; index < repeatCount; index++)
-        {
-            await SendCommandAsync(SerialRefresh, new byte[] { 0x4d, 0x01 }, waitForAck: PluginSettings.WaitForRefreshAck, cancellationToken);
-        }
+            await SendCommandAsync(SerialRefresh, new byte[] { RefreshDisplayIdentifier, RefreshCommitMode }, waitForAck: PluginSettings.WaitForRefreshAck, cancellationToken);
     }
 
     private Task DrawStripAsync(int x, Rgb565Canvas canvas, bool refresh, CancellationToken cancellationToken)
     {
         if (!_profile.HasSideStrips)
             throw new NotSupportedException($"{_profile.Name} does not have side strips.");
-        if (canvas.Width != 60 || canvas.Height != 270)
-            throw new ArgumentException("Side strip canvases must be 60x270 pixels.", nameof(canvas));
+        if (canvas.Width != _profile.SideStripWidth || canvas.Height != _profile.SideStripHeight)
+            throw new ArgumentException($"Side strip canvases must be {_profile.SideStripWidth}x{_profile.SideStripHeight} pixels.", nameof(canvas));
         return DrawRectangleAsync(x, 0, canvas, refresh, cancellationToken);
     }
 
@@ -237,8 +207,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
             var pending = string.Join(", ", _pending.Keys.Select(id => $"0x{id:x2}"));
             var last = _lastReceivedPacket.Length == 0 ? "<none>" : Convert.ToHexString(_lastReceivedPacket);
             throw new TimeoutException(
-                $"Timed out waiting for ACK to command 0x{command:x2}, transaction 0x{transactionId:x2}. " +
-                $"Pending transactions: [{pending}]. Last received packet: {last}.",
+                $"Timed out waiting for ACK to command 0x{command:x2}, transaction 0x{transactionId:x2}. Pending transactions: [{pending}]. Last received packet: {last}.",
                 ex);
         }
         finally
@@ -287,15 +256,15 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         switch (command)
         {
             case ButtonPress when data.Length >= 2:
-                ButtonChanged?.Invoke(this, new ButtonEventArgs(ButtonName(data[0]), data[1] == 0));
+                ButtonChanged?.Invoke(this, new ButtonEventArgs(LoupedeckControlMap.GetButtonName(data[0]), data[1] == 0));
                 break;
             case KnobRotate when data.Length >= 2:
-                KnobRotated?.Invoke(this, new KnobEventArgs(ButtonName(data[0]), (sbyte)data[1]));
+                KnobRotated?.Invoke(this, new KnobEventArgs(LoupedeckControlMap.GetButtonName(data[0]), (sbyte)data[1]));
                 break;
             case Touch or TouchCt or TouchEnd or TouchEndCt when data.Length >= 6:
                 var x = BinaryPrimitives.ReadUInt16BigEndian(data[1..]);
                 var y = BinaryPrimitives.ReadUInt16BigEndian(data[3..]);
-                TouchChanged?.Invoke(this, new TouchEventArgs(TouchKind(command), x, y, data[5], GetTarget(x, y)));
+                TouchChanged?.Invoke(this, new TouchEventArgs(TouchKind(command), x, y, data[5], LoupedeckControlMap.GetTouchTarget(_profile, x, y)));
                 break;
         }
 
@@ -312,8 +281,6 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         Log.Info($"{direction} {Convert.ToHexString(shown)}{suffix}");
     }
 
-    private static string ButtonName(byte id) => Buttons.TryGetValue(id, out var name) ? name : $"0x{id:x2}";
-
     private static string TouchKind(byte command) => command switch
     {
         Touch => "touch",
@@ -322,17 +289,6 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
         TouchEndCt => "touch-end-ct",
         _ => "unknown",
     };
-
-    private string GetTarget(int x, int y)
-    {
-        if (_profile.HasSideStrips && x < 60)
-            return "left-strip";
-        if (_profile.HasSideStrips && x >= 420)
-            return "right-strip";
-        if (x < _profile.CenterX || x >= _profile.CenterX + _profile.CenterWidth || y < 0 || y >= _profile.CenterHeight)
-            return "display";
-        return $"LCD-key-{y / _profile.KeySize * _profile.Columns + (x - _profile.CenterX) / _profile.KeySize}";
-    }
 
     public async ValueTask DisposeAsync()
     {
@@ -358,6 +314,7 @@ public sealed class LoupedeckDeviceClient : IAsyncDisposable
                 Log.Info("Receive loop did not stop within 1 second during shutdown; continuing close.");
             }
         }
+
         _receiveCancellation?.Dispose();
         _sendLock.Dispose();
     }
