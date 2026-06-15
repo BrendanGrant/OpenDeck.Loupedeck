@@ -3,7 +3,7 @@
   "Name": "Loupedeck",
   "Description": "OpenDeck device plugin for Loupedeck Live, Razer Stream Controller, and Razer Stream Controller X devices.",
   "Author": "Brendan Grant",
-  "Version": "0.2.0",
+  "Version": "0.3.0",
   "Icon": "images/icon",
   "CodePathWin": "win-x64/opendeck-loupedeck.exe",
   "CodePathLin": "linux-arm64/opendeck-loupedeck",
