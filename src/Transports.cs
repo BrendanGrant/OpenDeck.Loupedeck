@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Net.WebSockets;
 using System.Runtime.Versioning;
@@ -16,6 +17,15 @@ internal interface ILoupedeckTransport : IAsyncDisposable
 
 internal static class LoupedeckTransportDiscovery
 {
+    // The ioreg serial node sits near its USB parent; scan a bounded window instead of parsing the full tree.
+    private const int MacOSIoregLookBehindChars = 4096;
+    private const int MacOSIoregSearchWindowChars = MacOSIoregLookBehindChars * 2;
+    private const int MacOSIoregTimeoutMs = 3000;
+    // Loupedeck Live exposes a USB network adapter where the device is .2 and the host endpoint is .1.
+    private const string UsbNetworkAddressPrefix = "100.127.";
+    private const string UsbNetworkDeviceAddressSuffix = ".2";
+    private const string UsbNetworkHostAddressSuffix = ".1";
+
     public static IEnumerable<ILoupedeckTransport> FindCandidates()
     {
         var serialCandidates = FindSerialPorts().ToArray();
@@ -54,6 +64,13 @@ internal static class LoupedeckTransportDiscovery
         if (OperatingSystem.IsLinux())
         {
             foreach (var candidate in FindLinuxSerialPorts())
+                yield return candidate;
+            yield break;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            foreach (var candidate in FindMacOSSerialPorts())
                 yield return candidate;
         }
     }
@@ -125,6 +142,171 @@ internal static class LoupedeckTransportDiscovery
         var name = Path.GetFileName(portPath);
         return name.StartsWith("ttyACM", StringComparison.OrdinalIgnoreCase) ||
                name.StartsWith("ttyUSB", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<SerialCandidate> FindMacOSSerialPorts()
+    {
+        var ioreg = ReadMacOSIoreg();
+        var portPaths = FindMacOSPortNames()
+            .Where(IsLikelyMacOSLoupedeckPort)
+            .OrderBy(static name => name.StartsWith("/dev/cu.", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(static name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (var portPath in portPaths)
+        {
+            var info = TryReadMacOSDeviceInfo(portPath, ioreg) ??
+                new LoupedeckDeviceInfo(KnownUsbIds.VendorLoupedeck, KnownUsbIds.ProductLoupedeckLive) { StableId = portPath };
+
+            if (PluginSettings.TraceDiscovery)
+                Log.Info($"Probing likely macOS CDC serial port {portPath} ({info.VendorId:x4}:{info.ProductId:x4}).");
+
+            yield return new SerialCandidate(portPath, info);
+        }
+    }
+
+    private static IEnumerable<string> FindMacOSPortNames()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var portName in System.IO.Ports.SerialPort.GetPortNames())
+        {
+            if (seen.Add(portName))
+                yield return portName;
+        }
+
+        foreach (var pattern in new[] { "cu.usbmodem*", "cu.usbserial*", "tty.usbmodem*", "tty.usbserial*" })
+        {
+            foreach (var path in Directory.EnumerateFiles("/dev", pattern))
+            {
+                if (seen.Add(path))
+                    yield return path;
+            }
+        }
+    }
+
+    private static bool IsLikelyMacOSLoupedeckPort(string portPath)
+    {
+        var name = Path.GetFileName(portPath);
+        return name.StartsWith("cu.usbmodem", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith("cu.usbserial", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith("tty.usbmodem", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith("tty.usbserial", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static LoupedeckDeviceInfo? TryReadMacOSDeviceInfo(string portPath, string? ioreg)
+    {
+        if (string.IsNullOrWhiteSpace(ioreg))
+            return null;
+
+        var suffix = TryGetMacOSUsbModemSuffix(portPath);
+        if (suffix is null)
+            return null;
+
+        var suffixMarker = $"\"IOTTYSuffix\" = \"{suffix}\"";
+        var suffixIndex = ioreg.IndexOf(suffixMarker, StringComparison.Ordinal);
+        if (suffixIndex < 0)
+            return null;
+
+        // AppleUSBACMData carries the tty suffix and VID/PID, while serial number may live on a nearby parent node.
+        var start = Math.Max(0, suffixIndex - MacOSIoregLookBehindChars);
+        var length = Math.Min(ioreg.Length - start, MacOSIoregSearchWindowChars);
+        var window = ioreg.Substring(start, length);
+
+        var vendor = ReadMacOSIoregInt(window, "idVendor");
+        var product = ReadMacOSIoregInt(window, "idProduct");
+        if (vendor is null || product is null || !IsSupportedVendor(vendor.Value))
+            return null;
+
+        var stableId =
+            ReadMacOSIoregString(window, "USB Serial Number") ??
+            ReadMacOSIoregString(window, "kUSBSerialNumberString") ??
+            portPath;
+
+        return new LoupedeckDeviceInfo(vendor.Value, product.Value, stableId);
+    }
+
+    private static string? TryGetMacOSUsbModemSuffix(string portPath)
+    {
+        var name = Path.GetFileName(portPath);
+        foreach (var prefix in new[] { "cu.usbmodem", "tty.usbmodem" })
+        {
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && name.Length > prefix.Length)
+                return name[prefix.Length..];
+        }
+
+        return null;
+    }
+
+    private static int? ReadMacOSIoregInt(string ioreg, string property)
+    {
+        var marker = $"\"{property}\" = ";
+        var markerIndex = ioreg.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+            return null;
+
+        var valueIndex = markerIndex + marker.Length;
+        while (valueIndex < ioreg.Length && char.IsWhiteSpace(ioreg[valueIndex]))
+            valueIndex++;
+
+        var endIndex = valueIndex;
+        while (endIndex < ioreg.Length && char.IsDigit(ioreg[endIndex]))
+            endIndex++;
+
+        return endIndex == valueIndex || !int.TryParse(ioreg[valueIndex..endIndex], out var value) ? null : value;
+    }
+
+    private static string? ReadMacOSIoregString(string ioreg, string property)
+    {
+        var marker = $"\"{property}\" = \"";
+        var markerIndex = ioreg.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+            return null;
+
+        var valueIndex = markerIndex + marker.Length;
+        var endIndex = ioreg.IndexOf('"', valueIndex);
+        return endIndex <= valueIndex ? null : ioreg[valueIndex..endIndex];
+    }
+
+    private static string? ReadMacOSIoreg()
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo("ioreg")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            startInfo.ArgumentList.Add("-p"); // Select the registry plane.
+            startInfo.ArgumentList.Add("IOService"); // Includes serial BSD clients and USB parent services.
+            startInfo.ArgumentList.Add("-l"); // Include service properties such as idVendor, idProduct, and IOTTYSuffix.
+            startInfo.ArgumentList.Add("-w"); // Set output line width.
+            startInfo.ArgumentList.Add("0"); // Disable truncation so long USB properties stay intact.
+
+            using var process = Process.Start(startInfo);
+            if (process is null)
+                return null;
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            if (!process.WaitForExit(MacOSIoregTimeoutMs))
+            {
+                try
+                {
+                    process.Kill();
+                }
+                catch
+                {
+                }
+
+                return null;
+            }
+
+            return process.ExitCode == 0 ? outputTask.GetAwaiter().GetResult() : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? ResolveLinuxDevicePath(FileSystemInfo link)
@@ -230,8 +412,8 @@ internal static class LoupedeckTransportDiscovery
             foreach (var address in networkInterface.GetIPProperties().UnicastAddresses)
             {
                 var ip = address.Address.ToString();
-                if (ip.StartsWith("100.127.", StringComparison.Ordinal) && ip.EndsWith(".2", StringComparison.Ordinal))
-                    yield return ip[..^1] + "1";
+                if (ip.StartsWith(UsbNetworkAddressPrefix, StringComparison.Ordinal) && ip.EndsWith(UsbNetworkDeviceAddressSuffix, StringComparison.Ordinal))
+                    yield return ip[..^UsbNetworkDeviceAddressSuffix.Length] + UsbNetworkHostAddressSuffix;
             }
         }
     }
@@ -239,6 +421,8 @@ internal static class LoupedeckTransportDiscovery
 
 internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
 {
+    private const int ReceiveBufferSize = 8192;
+
     private readonly ClientWebSocket _socket = new();
     private readonly Uri _uri;
 
@@ -254,7 +438,7 @@ internal sealed class WebSocketLoupedeckTransport : ILoupedeckTransport
 
     public async Task<byte[]?> ReceiveAsync(CancellationToken cancellationToken)
     {
-        var chunk = new byte[8192];
+        var chunk = new byte[ReceiveBufferSize];
         using var message = new MemoryStream();
         WebSocketReceiveResult result;
         do

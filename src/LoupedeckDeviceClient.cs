@@ -5,6 +5,7 @@ namespace OpenDeck.Loupedeck;
 
 public sealed class LoupedeckDeviceClient : IAsyncDisposable
 {
+    // Command and event IDs from the Loupedeck device protocol.
     private const byte SetPhysicalButtonColorBase = 0x07;
     private const byte ButtonPress = 0x00;
     private const byte KnobRotate = 0x01;

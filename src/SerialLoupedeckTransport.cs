@@ -4,6 +4,7 @@ namespace OpenDeck.Loupedeck;
 
 internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
 {
+    // The device speaks a small WebSocket-like protocol over CDC serial after this upgrade request.
     private const int HandshakeResponseLimit = 4096;
     private const byte WebSocketBinaryFrameOpcode = 0x82;
     private const byte WebSocketExtendedLengthMarker = 0xff;
@@ -12,6 +13,7 @@ internal sealed class SerialLoupedeckTransport : ILoupedeckTransport
     private const int WebSocketExtendedLengthPayloadOffset = 4;
     private const int WebSocketExtendedLengthBytes = 12;
     private static readonly byte[] WebSocketCloseFrame = [0x88, 0x80, 0, 0, 0, 0];
+    // The key only needs to be syntactically present; the device does not validate a browser-grade handshake.
     private const string UpgradeRequest =
         "GET /index.html HTTP/1.1\r\n" +
         "Connection: Upgrade\r\n" +
